@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>MiniWinForm</RootNamespace>
+    <AssemblyName>MiniWinForm</AssemblyName>
+    <Win32Manifest>XPThemes.manifest</Win32Manifest>
+    <VersionPrefix>0.1</VersionPrefix>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PackageId>MiniWinForm</PackageId>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Description>A small Win32 GUI toolkit for Native AOT utilities that stays close to the WinForms programming model while keeping the published executable as small as possible.</Description>
+    <PackageTags>win32;gui;nativeaot;winforms;aot</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="NativeMethods.txt" />
+    <EmbeddedResource Include="XPThemes.manifest" LogicalName="MiniWinForm.XPThemes.manifest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.275">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
