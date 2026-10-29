@@ -420,7 +420,10 @@ internal static unsafe class NativeApplication
         INITCOMMONCONTROLSEX init = new()
         {
             dwSize = (uint)Marshal.SizeOf<INITCOMMONCONTROLSEX>(),
-            dwICC = INITCOMMONCONTROLSEX_ICC.ICC_WIN95_CLASSES,
+            dwICC = INITCOMMONCONTROLSEX_ICC.ICC_WIN95_CLASSES
+                | INITCOMMONCONTROLSEX_ICC.ICC_DATE_CLASSES
+                | INITCOMMONCONTROLSEX_ICC.ICC_STANDARD_CLASSES
+                | INITCOMMONCONTROLSEX_ICC.ICC_LINK_CLASS,
         };
 
         if (!PInvoke.InitCommonControlsEx(in init))

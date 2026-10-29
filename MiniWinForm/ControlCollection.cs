@@ -28,6 +28,7 @@ public sealed class ControlCollection : IEnumerable<Control>
         _items.Add(control);
         bool oldEnabled = control.Enabled;
         control.Parent = _owner;
+        _owner.OnControlAdded(control);
         _owner.PerformLayout();
 
         if (oldEnabled != control.Enabled)
@@ -39,6 +40,26 @@ public sealed class ControlCollection : IEnumerable<Control>
         {
             control.CreateHandle();
         }
+    }
+
+    public void Remove(Control control)
+    {
+        ArgumentNullException.ThrowIfNull(control);
+        int index = _items.IndexOf(control);
+        if (index < 0)
+        {
+            return;
+        }
+
+        _items.RemoveAt(index);
+        if (control.IsHandleCreated)
+        {
+            NativeControl.Destroy(control.NativeHandle);
+        }
+
+        control.Parent = null;
+        _owner.OnControlRemoved(control);
+        _owner.PerformLayout();
     }
 
     public IEnumerator<Control> GetEnumerator() => _items.GetEnumerator();

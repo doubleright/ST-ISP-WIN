@@ -6,6 +6,7 @@ namespace MiniWinForm;
 public sealed class RadioButton : Control
 {
     private bool _checked;
+    private string? _groupName;
 
     public RadioButton()
         : base(tabStop: true, width: 104, height: 24)
@@ -13,6 +14,24 @@ public sealed class RadioButton : Control
     }
 
     public event EventHandler? CheckedChanged;
+
+    /// <summary>
+    /// 互斥分组名。只有同组（默认都是 null）的单选按钮才会互相取消，
+    /// 这样同一容器里可以并排放多组单选（例如"波特率"和"进入方式"）。
+    /// </summary>
+    public string? GroupName
+    {
+        get
+        {
+            Application.VerifyUiThread();
+            return _groupName;
+        }
+        set
+        {
+            Application.VerifyUiThread();
+            _groupName = value;
+        }
+    }
 
     public bool Checked
     {
@@ -88,7 +107,11 @@ public sealed class RadioButton : Control
 
         foreach (Control sibling in Parent.Controls)
         {
-            if (sibling is RadioButton radioButton && radioButton != this && radioButton.Checked)
+            // 只清理同组的兄弟；未设 GroupName 的（null）依旧按"同容器即同组"处理。
+            if (sibling is RadioButton radioButton &&
+                radioButton != this &&
+                radioButton.Checked &&
+                string.Equals(radioButton.GroupName, _groupName, StringComparison.Ordinal))
             {
                 radioButton.SetChecked(false, updateNative: true, raiseEvent: true);
             }

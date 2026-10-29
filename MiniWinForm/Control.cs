@@ -35,6 +35,7 @@ public abstract class Control : IWin32Window
     private ContextMenuStrip? _contextMenuStrip;
     private Color _backColor = Color.Empty;
     private Color _foreColor = Color.Empty;
+    private Font? _font;
     private HBRUSH _backColorBrush;
 
     protected Control()
@@ -57,7 +58,7 @@ public abstract class Control : IWin32Window
         get
         {
             Application.VerifyUiThread();
-            if (IsHandleCreated)
+            if (IsHandleCreated && MirrorsTextToHandle)
             {
                 _text = NativeControl.GetText(NativeHandle);
             }
@@ -70,8 +71,10 @@ public abstract class Control : IWin32Window
             _text = value ?? string.Empty;
             if (IsHandleCreated)
             {
-                NativeControl.SetText(NativeHandle, _text);
+                NativeControl.SetText(NativeHandle, MirrorsTextToHandle ? _text : string.Empty);
             }
+
+            OnTextChanged();
         }
     }
 
@@ -158,6 +161,8 @@ public abstract class Control : IWin32Window
             {
                 NativeControl.Show(NativeHandle, _visible);
             }
+
+            OnVisibleChanged();
         }
     }
 
@@ -224,6 +229,42 @@ public abstract class Control : IWin32Window
         }
     }
 
+    /// <summary>
+    /// 为 null 时沿用系统消息字体；设置后只作用于本控件（不像 WinForms 那样向子控件继承），
+    /// owner-draw 的按钮/复选/分组框会从窗口句柄上取这个字体来画文字。
+    /// </summary>
+    public Font? Font
+    {
+        get => _font;
+        set
+        {
+            Application.VerifyUiThread();
+            if (ReferenceEquals(_font, value))
+            {
+                return;
+            }
+
+            _font = value;
+            ApplyFont();
+            if (IsHandleCreated)
+            {
+                NativeControl.Invalidate(NativeHandle);
+            }
+        }
+    }
+
+    internal bool HasExplicitBackColor => !_backColor.IsEmpty;
+
+    internal bool HasExplicitForeColor => !_foreColor.IsEmpty;
+
+    private void ApplyFont()
+    {
+        if (IsHandleCreated)
+        {
+            NativeControl.ApplyFont(NativeHandle, _font);
+        }
+    }
+
     public Control? Parent { get; internal set; }
 
     public ControlCollection Controls { get; }
@@ -261,6 +302,10 @@ public abstract class Control : IWin32Window
     public event EventHandler? ContextMenuStripChanged;
 
     public event EventHandler? EnabledChanged;
+
+    public event EventHandler? HandleCreated;
+
+    public event EventHandler? HandleDestroyed;
 
     public object? Invoke(Delegate method) => Invoke(method, null);
 
@@ -463,6 +508,12 @@ public abstract class Control : IWin32Window
 
     internal abstract string NativeClassName { get; }
 
+    /// <summary>
+    /// 为 false 时，Text 只作为托管状态保存，不写到原生窗口（例如 TabPage 用 Text 作为页签名称，
+    /// 但页面本身不应该把这段文字画成标题）。
+    /// </summary>
+    internal virtual bool MirrorsTextToHandle => true;
+
     internal virtual WINDOW_STYLE NativeStyle
     {
         get
@@ -491,16 +542,76 @@ public abstract class Control : IWin32Window
             throw new InvalidOperationException("A child control needs a parent with a created handle.");
         }
 
-        AssignHandle(NativeControl.CreateChild(this, Parent, NativeClassName, Text, NativeStyle, NativeExStyle));
+        AssignHandle(NativeControl.CreateChild(
+            this,
+            Parent,
+            NativeClassName,
+            MirrorsTextToHandle ? Text : string.Empty,
+            NativeStyle,
+            NativeExStyle));
         NativeControl.Register(this, NativeHandle);
-        NativeControl.ApplyDefaultFont(NativeHandle);
+        NativeControl.ApplyFont(NativeHandle, _font);
         NativeControl.Show(NativeHandle, Visible);
+        // 句柄建好后客户区尺寸才是真的：让直接子控件按真实客户区重新记录锚定快照。
+        // 否则 Form 的子控件会带着「窗口高度 - 客户区高度」（标题栏 + 边框）的偏差，
+        // 表现为靠 Bottom 锚定的控件整体上移一个标题栏高度。
+        ResetChildAnchorInfo();
         PerformLayout();
 
         foreach (Control child in Controls)
         {
             child.CreateHandle();
         }
+
+        RaiseHandleCreated();
+    }
+
+    internal void RaiseHandleCreated()
+    {
+        HandleCreated?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal void RaiseHandleDestroyed()
+    {
+        HandleDestroyed?.Invoke(this, EventArgs.Empty);
+    }
+
+    internal virtual void OnTextChanged()
+    {
+    }
+
+    internal virtual void OnVisibleChanged()
+    {
+    }
+
+    internal virtual void OnControlAdded(Control control)
+    {
+        _ = control;
+    }
+
+    internal virtual void OnControlRemoved(Control control)
+    {
+        _ = control;
+    }
+
+    internal virtual void GetNativeWindowSize(out int width, out int height)
+    {
+        width = Width;
+        height = Height;
+    }
+
+    internal void UpdateNativeBounds()
+    {
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        GetNativeWindowSize(out int width, out int height);
+        int childWindowLeft = 0;
+        int childWindowTop = 0;
+        Parent?.GetChildWindowOffset(out childWindowLeft, out childWindowTop);
+        NativeControl.Move(NativeHandle, Left + childWindowLeft, Top + childWindowTop, width, height);
     }
 
     protected virtual void OnEnabledChanged(EventArgs e)
@@ -534,6 +645,19 @@ public abstract class Control : IWin32Window
 
     internal virtual void OnCommand(int notificationCode)
     {
+        _ = notificationCode;
+    }
+
+    internal virtual LRESULT OnNotify(uint code, LPARAM lParam)
+    {
+        _ = code;
+        _ = lParam;
+        return default;
+    }
+
+    internal virtual void OnScroll(WPARAM wParam)
+    {
+        _ = wParam;
     }
 
     internal virtual bool DrawItem(in DRAWITEMSTRUCT drawItem)
@@ -609,6 +733,12 @@ public abstract class Control : IWin32Window
         NativeMenu.GetWindowRect(NativeHandle, out int left, out int top, out int right, out int bottom);
         screenX = left + ((right - left) / 2);
         screenY = top + ((bottom - top) / 2);
+    }
+
+    /// <summary>窗口尺寸变化（WM_SIZE）。默认就是重排一次子控件。</summary>
+    internal virtual void OnSizeMessage()
+    {
+        PerformLayout();
     }
 
     internal void PerformLayout()
@@ -741,9 +871,20 @@ public abstract class Control : IWin32Window
 
     private void EnsureAnchorInfo()
     {
-        if (!_anchorInfoInitialized)
+        // Form 还没 Show 之前，客户区一直在变（建窗 → 套样式 → 套 DPI），
+        // 这期间的布局都要按当前客户区重新记录锚定边距，否则会把过渡尺寸当成基准。
+        if (!_anchorInfoInitialized || Parent is Form { IsShown: false })
         {
             UpdateAnchorInfo();
+        }
+    }
+
+    /// <summary>客户区尺寸变化后（例如刚创建句柄），丢弃子控件旧的锚定快照。</summary>
+    internal void ResetChildAnchorInfo()
+    {
+        foreach (Control child in Controls)
+        {
+            child._anchorInfoInitialized = false;
         }
     }
 
@@ -832,10 +973,7 @@ public abstract class Control : IWin32Window
 
         if (IsHandleCreated)
         {
-            int childWindowLeft = 0;
-            int childWindowTop = 0;
-            Parent?.GetChildWindowOffset(out childWindowLeft, out childWindowTop);
-            NativeControl.Move(NativeHandle, Left + childWindowLeft, Top + childWindowTop, Width, Height);
+            UpdateNativeBounds();
         }
 
         if (sizeChanged)
@@ -915,6 +1053,7 @@ internal sealed class ControlAsyncResult : IAsyncResult
 internal static unsafe class NativeControl
 {
     private static readonly Dictionary<nint, Control> ControlsByHandle = [];
+    private static readonly Dictionary<nint, Control> NotifySources = [];
     private static readonly Dictionary<nint, nint> OriginalWindowProcedures = [];
     private static readonly WNDPROC SharedWindowProcedure = WindowProcedure;
     private static int _nextControlId = NativeConstants.DefaultControlId;
@@ -937,6 +1076,7 @@ internal static unsafe class NativeControl
         fixed (char* textPtr = text)
         {
             parent.GetChildWindowOffset(out int childWindowLeft, out int childWindowTop);
+            owner.GetNativeWindowSize(out int nativeWidth, out int nativeHeight);
             HWND handle = PInvoke.CreateWindowEx(
                 exStyle,
                 new PCWSTR(classNamePtr),
@@ -944,8 +1084,8 @@ internal static unsafe class NativeControl
                 finalStyle,
                 owner.Left + childWindowLeft,
                 owner.Top + childWindowTop,
-                owner.Width,
-                owner.Height,
+                nativeWidth,
+                nativeHeight,
                 parent.NativeHandle,
                 new HMENU(_nextControlId++),
                 Application.Instance,
@@ -1012,9 +1152,32 @@ internal static unsafe class NativeControl
                 return new LRESULT(0);
             case NativeConstants.WM_COMMAND:
                 DispatchCommand(wParam, lParam);
-                return new LRESULT(0);
+
+                // 不能吞掉：组合框的内部列表会向组合框自己发 WM_COMMAND（LBN_SELCHANGE 等），
+                // 原生窗口过程要靠它提交选中项，吞了就只能等失焦才对上。
+                return CallOriginalWindowProcedure(window, message, wParam, lParam);
+            case NativeConstants.WM_NOTIFY:
+            {
+                LRESULT notifyResult = DispatchNotify(lParam);
+                return notifyResult.Value != 0
+                    ? notifyResult
+                    : CallOriginalWindowProcedure(window, message, wParam, lParam);
+            }
+            case NativeConstants.WM_HSCROLL:
+            case NativeConstants.WM_VSCROLL:
+                DispatchScroll(wParam, lParam);
+                return CallOriginalWindowProcedure(window, message, wParam, lParam);
+            case NativeConstants.WM_DESTROY:
+            {
+                owner?.RaiseHandleDestroyed();
+                owner?.AssignHandle(default);
+                LRESULT destroyResult = CallOriginalWindowProcedure(window, message, wParam, lParam);
+                ControlsByHandle.Remove((nint)window.Value);
+                OriginalWindowProcedures.Remove((nint)window.Value);
+                return destroyResult;
+            }
             case NativeConstants.WM_SIZE:
-                owner?.PerformLayout();
+                owner?.OnSizeMessage();
                 return CallOriginalWindowProcedure(window, message, wParam, lParam);
             case NativeConstants.WM_CONTEXTMENU:
                 if (owner is not null && owner.ShowContextMenuFromMessage(lParam))
@@ -1095,6 +1258,43 @@ internal static unsafe class NativeControl
         }
 
         return control is not null;
+    }
+
+    internal static unsafe LRESULT DispatchNotify(LPARAM lParam)
+    {
+        if (lParam.Value == 0)
+        {
+            return default;
+        }
+
+        NMHDR* header = (NMHDR*)lParam.Value;
+        Control? control = FromHandle(header->hwndFrom) ?? FromNotifySource(header->hwndFrom);
+        return control?.OnNotify(header->code, lParam) ?? default;
+    }
+
+    internal static void DispatchScroll(WPARAM wParam, LPARAM lParam)
+    {
+        if (lParam.Value == 0)
+        {
+            return;
+        }
+
+        FromHandle(new HWND(lParam.Value))?.OnScroll(wParam);
+    }
+
+    internal static void RegisterNotifySource(HWND source, Control control)
+    {
+        NotifySources[(nint)source.Value] = control;
+    }
+
+    internal static void UnregisterNotifySource(HWND source)
+    {
+        NotifySources.Remove((nint)source.Value);
+    }
+
+    private static Control? FromNotifySource(HWND source)
+    {
+        return NotifySources.TryGetValue((nint)source.Value, out Control? control) ? control : null;
     }
 
     internal static void DispatchCommand(WPARAM wParam, LPARAM lParam)
@@ -1179,6 +1379,12 @@ internal static unsafe class NativeControl
     {
         HFONT font = NativeFont.MessageFont;
         _ = PInvoke.SendMessage(handle, NativeConstants.WM_SETFONT, new WPARAM((nuint)font.Value), new LPARAM(1));
+    }
+
+    internal static void ApplyFont(HWND handle, Font? font)
+    {
+        HFONT nativeFont = font is null ? NativeFont.MessageFont : font.Handle;
+        _ = PInvoke.SendMessage(handle, NativeConstants.WM_SETFONT, new WPARAM((nuint)nativeFont.Value), new LPARAM(1));
     }
 
     internal static HFONT GetFont(HWND handle)
@@ -1340,6 +1546,7 @@ internal static unsafe class NativeDraw
         RECT textBounds = bounds;
         textBounds.left = glyph.right + NativeConstants.CheckTextGap;
         COLORREF previousTextColor = SetDrawItemTextColor(drawItem, control);
+        HGDIOBJ previousFont = SelectDrawFont(drawItem.hDC, control);
         try
         {
             DrawText(
@@ -1350,6 +1557,7 @@ internal static unsafe class NativeDraw
         }
         finally
         {
+            RestoreDrawFont(drawItem.hDC, previousFont);
             _ = PInvoke.SetTextColor(drawItem.hDC, previousTextColor);
         }
     }
@@ -1363,7 +1571,11 @@ internal static unsafe class NativeDraw
         textBounds.right -= 3;
         textBounds.bottom -= 3;
 
-        if (!DrawThemedButton(drawItem, bounds, handle))
+        if (control is Button { Style: ButtonStyle.Flat } flatButton)
+        {
+            DrawFlatButton(drawItem, bounds, flatButton);
+        }
+        else if (!DrawThemedButton(drawItem, bounds, handle))
         {
             DrawClassicButton(drawItem, bounds);
         }
@@ -1739,6 +1951,70 @@ internal static unsafe class NativeDraw
 
     internal static void DrawGroupBox(DRAWITEMSTRUCT drawItem, string text, Control control)
     {
+        HGDIOBJ previousFont = SelectDrawFont(drawItem.hDC, control);
+        try
+        {
+            if (control is GroupBox { Style: GroupBoxStyle.Card } card)
+            {
+                DrawCardGroupBox(drawItem, text, card);
+                return;
+            }
+
+            DrawStandardGroupBox(drawItem, text, control);
+        }
+        finally
+        {
+            RestoreDrawFont(drawItem.hDC, previousFont);
+        }
+    }
+
+    /// <summary>卡片样式：自绘底色、1px 细边框、标题独占顶栏，顶栏下一条分隔线。</summary>
+    private static void DrawCardGroupBox(DRAWITEMSTRUCT drawItem, string text, GroupBox card)
+    {
+        RECT bounds = drawItem.rcItem;
+        FillControlBackground(drawItem.hDC, bounds, card);
+        _ = PInvoke.SetBkMode(drawItem.hDC, BACKGROUND_MODE.TRANSPARENT);
+
+        Color borderColor = card.BorderColor.IsEmpty ? Darken(card.EffectiveBackColor, 0.10) : card.BorderColor;
+        DrawSolidFrame(drawItem.hDC, bounds, borderColor);
+
+        int band = ScaleToDpi(NativeConstants.CardTitleBand);
+        int inset = ScaleToDpi(NativeConstants.CardTitleInset);
+
+        RECT titleBounds = new()
+        {
+            left = bounds.left + inset,
+            top = bounds.top,
+            right = bounds.right - inset,
+            bottom = bounds.top + band,
+        };
+
+        COLORREF previousTextColor = SetDrawItemTextColor(drawItem, card);
+        try
+        {
+            DrawText(
+                drawItem.hDC,
+                text,
+                ref titleBounds,
+                DRAW_TEXT_FORMAT.DT_SINGLELINE | DRAW_TEXT_FORMAT.DT_VCENTER | DRAW_TEXT_FORMAT.DT_NOPREFIX);
+        }
+        finally
+        {
+            _ = PInvoke.SetTextColor(drawItem.hDC, previousTextColor);
+        }
+
+        RECT divider = new()
+        {
+            left = bounds.left + 1,
+            top = bounds.top + band,
+            right = bounds.right - 1,
+            bottom = bounds.top + band + 1,
+        };
+        FillSolidRectangle(drawItem.hDC, divider, borderColor);
+    }
+
+    private static void DrawStandardGroupBox(DRAWITEMSTRUCT drawItem, string text, Control control)
+    {
         RECT bounds = drawItem.rcItem;
         FillControlBackground(drawItem.hDC, bounds, control);
         _ = PInvoke.SetBkMode(drawItem.hDC, BACKGROUND_MODE.TRANSPARENT);
@@ -1781,6 +2057,66 @@ internal static unsafe class NativeDraw
         }
     }
 
+    private static int ScaleToDpi(int value)
+    {
+        uint dpi = PInvoke.GetDpiForSystem();
+        return dpi == 0 ? value : (int)Math.Round(value * dpi / 96.0);
+    }
+
+    private static void FillSolidRectangle(HDC deviceContext, RECT bounds, Color color)
+    {
+        HBRUSH brush = PInvoke.CreateSolidBrush(Control.ToColorRef(color));
+        try
+        {
+            _ = PInvoke.FillRect(deviceContext, &bounds, brush);
+        }
+        finally
+        {
+            _ = PInvoke.DeleteObject(new HGDIOBJ(brush.Value));
+        }
+    }
+
+    private static void DrawSolidFrame(HDC deviceContext, RECT bounds, Color color)
+    {
+        HBRUSH brush = PInvoke.CreateSolidBrush(Control.ToColorRef(color));
+        try
+        {
+            _ = PInvoke.FrameRect(deviceContext, &bounds, brush);
+        }
+        finally
+        {
+            _ = PInvoke.DeleteObject(new HGDIOBJ(brush.Value));
+        }
+    }
+
+    internal static Color Darken(Color color, double amount)
+    {
+        return Color.FromArgb(
+            color.A,
+            (int)Math.Round(color.R * (1 - amount)),
+            (int)Math.Round(color.G * (1 - amount)),
+            (int)Math.Round(color.B * (1 - amount)));
+    }
+
+    private static HGDIOBJ SelectDrawFont(HDC deviceContext, Control? control)
+    {
+        if (control is null || !control.IsHandleCreated)
+        {
+            return default;
+        }
+
+        HFONT font = NativeControl.GetFont(control.NativeHandle);
+        return font == default ? default : PInvoke.SelectObject(deviceContext, new HGDIOBJ(font.Value));
+    }
+
+    private static void RestoreDrawFont(HDC deviceContext, HGDIOBJ previous)
+    {
+        if (previous != default)
+        {
+            _ = PInvoke.SelectObject(deviceContext, previous);
+        }
+    }
+
     private static void DrawText(HDC deviceContext, string text, ref RECT bounds, DRAW_TEXT_FORMAT format)
     {
         fixed (char* textPtr = text)
@@ -1819,8 +2155,27 @@ internal static unsafe class NativeDraw
         return PInvoke.DrawThemeBackground(theme, drawItem.hDC, part, state, &glyph, null).Succeeded;
     }
 
-    private static bool DrawThemedButton(DRAWITEMSTRUCT drawItem, RECT bounds, HWND handle)
+    private static void DrawFlatButton(DRAWITEMSTRUCT drawItem, RECT bounds, Button button)
     {
+        int itemState = (int)drawItem.itemState;
+        bool disabled = (itemState & NativeConstants.ODS_DISABLED) != 0;
+        bool pressed = (itemState & NativeConstants.ODS_SELECTED) != 0;
+
+        Color background = disabled ? Color.FromArgb(0xF1, 0xF3, 0xF7) : button.EffectiveBackColor;
+        if (pressed)
+        {
+            background = Darken(background, 0.08);
+        }
+
+        FillSolidRectangle(drawItem.hDC, bounds, background);
+
+        Color border = disabled
+            ? Color.FromArgb(0xE4, 0xE8, 0xEF)
+            : button.BorderColor.IsEmpty ? Darken(background, 0.14) : button.BorderColor;
+        DrawSolidFrame(drawItem.hDC, bounds, border);
+    }
+
+    private static bool DrawThemedButton(DRAWITEMSTRUCT drawItem, RECT bounds, HWND handle)    {
         HTHEME theme = ButtonTheme;
         if (theme == default)
         {

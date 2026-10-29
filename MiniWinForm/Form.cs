@@ -49,6 +49,9 @@ public class Form : Control
 
     public bool Modal => _modal;
 
+    /// <summary>是否已经 Show 过（显示前的尺寸变化属于建窗过程，不按锚定处理）。</summary>
+    internal bool IsShown => _shown;
+
     public FormBorderStyle FormBorderStyle
     {
         get => _formBorderStyle;
@@ -218,8 +221,6 @@ public class Form : Control
         }
     }
 
-    public event EventHandler? HandleCreated;
-
     public event EventHandler? Shown;
 
     public event EventHandler? SizeChanged;
@@ -239,6 +240,9 @@ public class Form : Control
         NativeWindow.CreateTopLevelWindow(this, NativeClass.Name);
         UpdateWindowIcon(redrawFrame: false);
         ApplyMainMenu();
+        // 窗口客户区到这里才定下来，子控件的锚定快照要按真实客户区重量一遍，
+        // 否则靠 Right/Bottom 锚定的控件会带上「窗口尺寸 - 客户区尺寸」的偏差。
+        ResetChildAnchorInfo();
         PerformLayout();
 
         foreach (Control child in Controls)
@@ -246,7 +250,21 @@ public class Form : Control
             child.CreateHandle();
         }
 
-        HandleCreated?.Invoke(this, EventArgs.Empty);
+        RaiseHandleCreated();
+    }
+
+    /// <summary>
+    /// 显示之前的尺寸变化都发生在建窗、套样式、套 DPI 的过程中，此时的客户区还不是最终值，
+    /// 所以每次都重新记录子控件的锚定边距；一旦 Show 过，就交给正常的锚定逻辑。
+    /// </summary>
+    internal override void OnSizeMessage()
+    {
+        if (!_shown)
+        {
+            ResetChildAnchorInfo();
+        }
+
+        PerformLayout();
     }
 
     private void UpdateFormStyles()
@@ -484,33 +502,9 @@ public class Form : Control
         PerformLayout();
     }
 
-    internal override void GetClientSize(out int left, out int top, out int width, out int height)
-    {
-        base.GetClientSize(out left, out top, out width, out height);
-        height += GetNativeMainMenuHeight();
-    }
-
-    internal override void GetChildWindowOffset(out int left, out int top)
-    {
-        left = 0;
-        top = -GetNativeMainMenuHeight();
-    }
-
-    private int GetNativeMainMenuHeight()
-    {
-        if (!IsHandleCreated || _nativeMenu == default || GetVisibleMainMenuStrip() is null)
-        {
-            return 0;
-        }
-
-        int dpi = NativeApplication.GetCurrentDpi(NativeHandle);
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 14393))
-        {
-            return PInvoke.GetSystemMetricsForDpi(SYSTEM_METRICS_INDEX.SM_CYMENU, (uint)dpi);
-        }
-
-        return PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYMENU);
-    }
+    // 说明：窗口用原生菜单（HMENU）时，Windows 已经把菜单占的高度从客户区里扣掉了。
+    // 这里不要再把菜单高度加回客户区、也不要把子控件整体上移，否则所有子控件都会被抬起
+    // 一个菜单的高度：顶部内容（例如 TabControl 的页签标题）会被客户区裁掉，底部则露出一条空隙。
 
     internal LRESULT WndProc(HWND window, uint message, WPARAM wParam, LPARAM lParam)
     {
@@ -541,6 +535,17 @@ public class Form : Control
 
                 NativeControl.DispatchCommand(wParam, lParam);
                 return new LRESULT(0);
+            case NativeConstants.WM_NOTIFY:
+            {
+                LRESULT notifyResult = NativeControl.DispatchNotify(lParam);
+                return notifyResult.Value != 0
+                    ? notifyResult
+                    : PInvoke.DefWindowProc(window, message, wParam, lParam);
+            }
+            case NativeConstants.WM_HSCROLL:
+            case NativeConstants.WM_VSCROLL:
+                NativeControl.DispatchScroll(wParam, lParam);
+                return PInvoke.DefWindowProc(window, message, wParam, lParam);
             case NativeConstants.WM_CONTEXTMENU:
                 if (wParam.Value != 0)
                 {
@@ -591,6 +596,7 @@ public class Form : Control
                 return ApplyStaticControlColor(wParam, lParam);
             case NativeConstants.WM_DESTROY:
                 _shown = false;
+                RaiseHandleDestroyed();
                 NativeMenu.Destroy(_nativeMenu);
                 _nativeMenu = default;
                 NativeWindow.Unregister(NativeHandle);
