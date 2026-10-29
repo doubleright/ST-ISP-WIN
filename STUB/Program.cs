@@ -28,6 +28,7 @@ internal static class Program
 
     private static void RunWindow()
     {
+        Texts.Initialize();
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.Run(new MainForm());

@@ -275,6 +275,64 @@ internal static class Flasher
         return true;
     }
 
+    public static void Erase(FlashJob job, Action<string> log, CancellationToken cancellationToken)
+    {
+        Exception? last = null;
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            WinSerialPort? port = null;
+            try
+            {
+                log($"Open {job.PortName} @ {job.BaudRate}, 8E1");
+                port = WinSerialPort.Open(job.PortName, job.BaudRate, evenParity: true);
+                Thread.Sleep(100);
+                var loader = new Stm32Bootloader(port);
+                if (job.EnterIsp)
+                {
+                    loader.EnterIsp(job.AutoSync, log, cancellationToken);
+                }
+                else
+                {
+                    loader.Init(cancellationToken);
+                    log("Bootloader ACK.");
+                }
+
+                try
+                {
+                    log($"Chip ID 0x{loader.GetProductId(cancellationToken):X4}");
+                }
+                catch (Exception ex) when (ex is TimeoutException or BootloaderNackException or InvalidOperationException)
+                {
+                    log("GetID skipped: " + ex.Message);
+                }
+
+                log($"Erase ({attempt}/5)...");
+                loader.MassErase(cancellationToken);
+                var blank = loader.ReadMemory(FlashBase, 256, cancellationToken);
+                if (blank.Any(value => value != 0xFF))
+                {
+                    throw new InvalidOperationException("Flash is not blank after erase.");
+                }
+
+                log("Erase OK. Flash is blank.");
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && attempt < 5)
+            {
+                last = ex;
+                log("Retry: " + ex.Message);
+                Thread.Sleep(800);
+            }
+            finally
+            {
+                port?.Dispose();
+            }
+        }
+
+        throw last ?? new InvalidOperationException("Erase failed.");
+    }
+
     public static void Program(FlashJob job, Action<string> log, Action<int> progress, CancellationToken cancellationToken)
     {
         var image = IntelHex.Load(job.HexPath)
